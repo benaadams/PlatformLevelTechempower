@@ -91,7 +91,11 @@ namespace PlatformLevelTechempower
 
                     while (true)
                     {
-                        var result = await Input.Reader.ReadAsync();
+                        if (!Input.Reader.TryRead(out var result))
+                        {
+                            result = await Input.Reader.ReadAsync();
+                        }
+
                         var inputBuffer = result.Buffer;
                         var consumed = inputBuffer.Start;
                         var examined = inputBuffer.End;
@@ -115,7 +119,15 @@ namespace PlatformLevelTechempower
                             {
                                 var outputBuffer = Output.Writer.Alloc();
                                 outputBuffer.Write(_plainTextResposne);
-                                await outputBuffer.FlushAsync();
+                                var t = outputBuffer.FlushAsync();
+                                if (t.IsCompleted)
+                                {
+                                    t.GetAwaiter().GetResult();
+                                }
+                                else
+                                {
+                                    await t;
+                                }
                                 _state = State.StartLine;
                             }
                         }

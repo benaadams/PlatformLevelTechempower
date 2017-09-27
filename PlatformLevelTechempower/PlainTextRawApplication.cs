@@ -15,7 +15,7 @@ namespace PlatformLevelTechempower
 {
     public class PlainTextRawApplication : IConnectionHandler, IServerApplication
     {
-        private static readonly byte[] _plainTextResposne = Encoding.UTF8.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 13\r\nContent-Type: text/plain\r\n\r\nHello, World!");
+        private static readonly byte[] _plainTextBytes = Encoding.UTF8.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 13\r\nContent-Type: text/plain\r\n\r\nHello, World!");
 
         public async Task RunAsync(int port)
         {
@@ -61,6 +61,7 @@ namespace PlatformLevelTechempower
 
         private class HttpConnectionContext : IConnectionContext, IHttpHeadersHandler, IHttpRequestLineHandler
         {
+            private const uint MaxBytesWrittenBeforeFlush = 1300 * 2;
             private State _state;
 
             public string ConnectionId { get; set; }
@@ -89,10 +90,22 @@ namespace PlatformLevelTechempower
                 {
                     var parser = new HttpParser<HttpConnectionContext>();
 
+                    var bytesWritten = 0u;
+                    WritableBuffer outputBuffer = default;
                     while (true)
                     {
                         if (!Input.Reader.TryRead(out var result))
                         {
+                            if (bytesWritten > 0)
+                            {
+                                var flushResult = outputBuffer.FlushAsync();
+
+                                if (flushResult.IsCompleted)
+                                {
+                                    await flushResult;
+                                }
+                            }
+
                             result = await Input.Reader.ReadAsync();
                         }
 
@@ -104,6 +117,10 @@ namespace PlatformLevelTechempower
                         {
                             if (inputBuffer.IsEmpty && result.IsCompleted)
                             {
+                                if (bytesWritten > 0)
+                                {
+                                    await outputBuffer.FlushAsync();
+                                }
                                 break;
                             }
 
@@ -112,21 +129,30 @@ namespace PlatformLevelTechempower
                             if (_state != State.Body && result.IsCompleted)
                             {
                                 // Bad request
+                                if (bytesWritten > 0)
+                                {
+                                    await outputBuffer.FlushAsync();
+                                }
                                 break;
                             }
 
                             if (_state == State.Body)
                             {
-                                var outputBuffer = Output.Writer.Alloc();
-                                outputBuffer.Write(_plainTextResposne);
-                                var t = outputBuffer.FlushAsync();
-                                if (t.IsCompleted)
+                                outputBuffer = Output.Writer.Alloc();
+                                outputBuffer.Write(_plainTextBytes);
+                                outputBuffer.Commit();
+                                bytesWritten += (uint)_plainTextBytes.Length;
+
+                                if (bytesWritten >= MaxBytesWrittenBeforeFlush)
                                 {
-                                    t.GetAwaiter().GetResult();
-                                }
-                                else
-                                {
-                                    await t;
+                                    var flushResult = outputBuffer.FlushAsync();
+
+                                    if (flushResult.IsCompleted)
+                                    {
+                                        await flushResult;
+                                    }
+
+                                    bytesWritten = 0;
                                 }
                                 _state = State.StartLine;
                             }
